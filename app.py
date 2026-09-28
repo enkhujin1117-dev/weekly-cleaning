@@ -14,12 +14,27 @@ TASKS = ["Bar1 хөргөгч","Пос орчин","Бүх алчуур","Bar2 �
 # ---------------------------------------------------------------- storage
 def _cfg():
     try:
-        return st.secrets["SUPABASE_URL"].rstrip("/"), st.secrets["SUPABASE_KEY"]
-    except Exception:
+        url = str(st.secrets["SUPABASE_URL"]).strip().strip('"').rstrip("/")
+        if url.endswith("/rest/v1"):
+            url = url[: -len("/rest/v1")]
+        key = str(st.secrets["SUPABASE_KEY"]).strip()
+        if not url.startswith("http"):
+            st.error("SUPABASE_URL нь https:// гэж эхэлсэн байх ёстой (Secrets-ээ шалгана уу)")
+            st.stop()
+        return url, key
+    except KeyError:
         return None, None
 
 def _headers(key):
-    return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    h = {"apikey": key, "Content-Type": "application/json"}
+    if not key.startswith("sb_"):  # шинэ sb_secret_... түлхүүр Authorization-д хэрэглэгддэггүй
+        h["Authorization"] = f"Bearer {key}"
+    return h
+
+def _check(r):
+    if not r.ok:
+        st.error(f"Supabase алдаа {r.status_code}: {r.text[:300]}")
+        st.stop()
 
 LOCAL = "local_store.json"  # zuvhun computer deer turshihad (Cloud deer hadgalagdahgui)
 
@@ -28,7 +43,7 @@ def load_all():
     url, key = _cfg()
     if url:
         r = requests.get(f"{url}/rest/v1/kv?select=key,value", headers=_headers(key), timeout=30)
-        r.raise_for_status()
+        _check(r)
         return {x["key"]: x["value"] for x in r.json()}
     return json.load(open(LOCAL)) if os.path.exists(LOCAL) else {}
 
@@ -36,7 +51,7 @@ def put(k, v):
     url, key = _cfg()
     if url:
         h = _headers(key) | {"Prefer": "resolution=merge-duplicates"}
-        requests.post(f"{url}/rest/v1/kv", headers=h, json={"key": k, "value": v}, timeout=30).raise_for_status()
+        _check(requests.post(f"{url}/rest/v1/kv", headers=h, json={"key": k, "value": v}, timeout=30))
     else:
         d = load_all().copy(); d[k] = v; json.dump(d, open(LOCAL, "w"))
     load_all.clear()
@@ -44,7 +59,7 @@ def put(k, v):
 def delete(k):
     url, key = _cfg()
     if url:
-        requests.delete(f"{url}/rest/v1/kv", headers=_headers(key), params={"key": "eq." + k}, timeout=30).raise_for_status()
+        _check(requests.delete(f"{url}/rest/v1/kv", headers=_headers(key), params={"key": "eq." + k}, timeout=30))
     else:
         d = load_all().copy(); d.pop(k, None); json.dump(d, open(LOCAL, "w"))
     load_all.clear()
@@ -93,7 +108,10 @@ if state and state["weekStart"] < monday():   # 7 honog duussan -> automataar sh
     data = load_all(); state = data["state"]
 
 # --- admin (sidebar)
-admin_pw = st.secrets.get("ADMIN_PASSWORD", None) if hasattr(st, "secrets") else None
+try:
+    admin_pw = str(st.secrets["ADMIN_PASSWORD"]).strip()
+except Exception:
+    admin_pw = None
 with st.sidebar:
     st.header("⚙️ Админ")
     if st.session_state.get("admin"):
@@ -103,7 +121,7 @@ with st.sidebar:
     else:
         pw = st.text_input("Нууц үг", type="password")
         if st.button("Нэвтрэх"):
-            if admin_pw and pw == admin_pw:
+            if admin_pw and pw.strip() == admin_pw:
                 st.session_state.admin = True; st.rerun()
             else:
                 st.error("Буруу нууц үг (эсвэл ADMIN_PASSWORD тохируулаагүй)")
