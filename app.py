@@ -8,14 +8,20 @@ from PIL import Image, ImageOps
 
 TZ = ZoneInfo("Asia/Ulaanbaatar")
 MAX_PHOTOS = 4  # нэг ажилд оруулах зургийн дээд тоо
-PER = 4  # baristа bur 7 honogt avah tseverlgeenii too
+PER = 3  # бариста бүрт 7 хоногт оногдох цэвэрлэгээний тоо
 DAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"]
-TASKS = ["Bar1 хөргөгч","Пос орчин","Бүх алчуур","Bar2 хөргөгч","Pantry эмх цэгц","Cake сав","Pantry хөргөгч","Pantry угаалтуурын шүүгээ"
-         ,"Powder сав","Pantry хөлдөөгч","Pantry хар шүүгээ","Хогийн шүүр, тоглуур","Gelato хөлдөөгч","Gelato хар шүүгээ","Бохь түүх","Gelato зураг","Gela
-         to пос орчин","Gelato угаалтуур","Menu board","Bene logo","Бүх сагс","Gelato show case","Шалны мод, хувин","Gelato шилэн хана","Cake show case","Номын тавиур"
-         ,"Төмөр хашлага","Gelato take гэрэл","Бүх сандал","Чулуун тавцан","Бүх ширээ","Selfbar","Бүх хогийн сав","Vip new york гэрэл","Take булан тохой","Pantry хана","Том цаг"
-         ,"Тоног төхөөрөмж","Заалны булан тохой","Заал new york гэрэл","Take гэрэл","Жаазтай зураг","Take хар шүүгээ","Ногоон навч","Буйдан","Vip шилэн хана","Vip булан тохой","Chunks сав","2 да
-         вхарын шилэн хана","Бүх паар","Камер тавиур"]
+TASKS = [
+    "Bar1 хөргөгч", "Пос орчин", "Бүх алчуур", "Bar2 хөргөгч", "Pantry эмх цэгц", "Cake сав",
+    "Pantry хөргөгч", "Pantry угаалтуурын шүүгээ", "Powder сав", "Pantry хөлдөөгч", "Pantry хар шүүгээ",
+    "Хогийн шүүр, тосгуур", "Gelato хөлдөөгч", "Gelato хар шүүгээ", "Бохь түүх", "Gelato зураг",
+    "Gelato пос орчин", "Gelato угаалтуур", "Menu board", "Bene logo", "Бүх сагс", "Gelato show case",
+    "Шалны мод, хувин", "Gelato шилэн хана", "Cake show case", "Номын тавиур", "Төмөр хашлага",
+    "Gelato take гэрэл", "Бүх сандал", "Чулуун тавцан", "Бүх ширээ", "Selfbar", "Бүх хогийн сав",
+    "Vip new york гэрэл", "Take булан тохой", "Pantry хана", "Том цаг", "Тоног төхөөрөмж",
+    "Заалны булан тохой", "Заал new york гэрэл", "Take гэрэл", "Жаазтай зураг", "Take хар шүүгээ",
+    "Ногоон навч", "Буйдан", "Vip шилэн хана", "Vip булан тохой", "Chunks сав",
+    "2 давхарын шилэн хана", "Бүх паар", "Камер тавиур",
+]
 
 # ---------------------------------------------------------------- storage
 def _cfg():
@@ -42,7 +48,7 @@ def _check(r):
         st.error(f"Supabase алдаа {r.status_code}: {r.text[:300]}")
         st.stop()
 
-LOCAL = "local_store.json"  # zuvhun computer deer turshihad (Cloud deer hadgalagdahgui)
+LOCAL = "local_store.json"  # зөвхөн компьютер дээр турших үед (Cloud дээр хадгалагдахгүй)
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_all():
@@ -75,27 +81,43 @@ def monday():
     d = datetime.now(TZ).date()
     return (d - timedelta(days=d.weekday())).isoformat()
 
-def make_plan(n):
-    pool = random.sample(TASKS, len(TASKS))
-    return {str(p): pool[p * PER:(p + 1) * PER] for p in range(n)}
+def make_plan(names, counts):
+    """Нэг долоо хоногт ажил хоорондоо давхцахгүй.
+    Хүн өмнө нь хийсэн ажлаа хамгийн сүүлд авна (counts = {нэр: {ажил: удаа}})."""
+    avail = TASKS[:]
+    plan = {}
+    order = list(range(len(names)))
+    random.shuffle(order)
+    for p in order:
+        h = counts.get(names[p], {})
+        cand = sorted(avail, key=lambda t: (h.get(t, 0), random.random()))
+        pick = cand[:PER]
+        for t in pick:
+            avail.remove(t)
+        plan[str(p)] = pick
+    return plan
 
 def did(w, p, i):
     return f"done:{w}_{p}_{i}"
 
-def new_week(names, last_missed):
+def new_week(names, last_missed, counts):
     w = monday()
-    put("state", {"names": names, "weekStart": w, "plan": make_plan(len(names)), "lastMissed": last_missed})
+    put("state", {"names": names, "weekStart": w, "plan": make_plan(names, counts), "lastMissed": last_missed})
     for k in [k for k in load_all() if k.startswith("done:") and not k.startswith(f"done:{w}_")]:
         delete(k)
 
 def rollover(state, data):
     missed = []
+    counts = {n: dict(c) for n, c in data.get("history", {}).get("counts", {}).items()}
     for p, n in enumerate(state["names"]):
         tasks = state["plan"].get(str(p), [])
         ok = sum(1 for i in range(len(tasks)) if did(state["weekStart"], p, i) in data)
         if ok < len(tasks):
             missed.append({"name": n, "done": ok, "total": len(tasks)})
-    new_week(state["names"], {"week": state["weekStart"], "list": missed})
+        for t in tasks:  # өнгөрсөн 7 хоногийн ажлыг түүхэнд нэмнэ
+            counts.setdefault(n, {})[t] = counts.get(n, {}).get(t, 0) + 1
+    put("history", {"counts": counts})
+    new_week(state["names"], {"week": state["weekStart"], "list": missed}, counts)
 
 def compress(file):
     im = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
@@ -148,11 +170,11 @@ st.title("🧼 Weekly Cleaning")
 
 data = load_all()
 state = data.get("state")
-if state and state["weekStart"] < monday():   # 7 honog duussan -> automataar shine 7 honog
+if state and state["weekStart"] < monday():   # 7 хоног дууссан -> автоматаар шинэ 7 хоног
     rollover(state, data)
     data = load_all(); state = data["state"]
 
-# --- admin (sidebar)
+# --- админ (хажуу цэс)
 try:
     admin_pw = str(st.secrets["ADMIN_PASSWORD"]).strip()
 except Exception:
@@ -193,7 +215,8 @@ if is_admin:
             else:
                 for k in [k for k in data if k.startswith("done:")]:
                     delete(k)
-                new_week(names, state.get("lastMissed") if state else None)
+                new_week(names, state.get("lastMissed") if state else None,
+                         data.get("history", {}).get("counts", {}))
                 st.rerun()
 
 if not state:
@@ -208,7 +231,7 @@ lm = state.get("lastMissed")
 if lm:
     if lm["list"]:
         lines = "  \n".join(f"**{x['name']}** — {x['done']}/{x['total']} хийсэн" for x in lm["list"])
-        st.error(f"📋 Өнгөрсөн 7 хоног ({lm['week']}) — хийгээгүй хүмүүс  \n{lines}  \n→ Мөсний машин, цагаан чулуу цэвэрлэнэ")
+        st.error(f"📋 Өнгөрсөн 7 хоног ({lm['week']}) — хийгээгүй хүмүүс  \n{lines}  \n→ Мөсний машин, цагаан чулууг цэвэрлэнэ")
     else:
         st.success(f"📋 Өнгөрсөн 7 хоног ({lm['week']}) — бүгд бүрэн хийсэн 🎉")
 
