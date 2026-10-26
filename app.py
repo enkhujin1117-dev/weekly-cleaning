@@ -48,6 +48,7 @@ def _check(r):
         st.error(f"Supabase алдаа {r.status_code}: {r.text[:300]}")
         st.stop()
 
+GIF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "celebrate.gif")
 LOCAL = "local_store.json"  # зөвхөн компьютер дээр турших үед (Cloud дээр хадгалагдахгүй)
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -203,6 +204,12 @@ with st.sidebar:
     st.selectbox("🎨 Өнгө", list(THEMES), key="theme")
     if is_admin and st.button("🌐 Бүгдэд энэ өнгийг хадгалах"):
         put("theme", {"name": st.session_state.theme}); st.success("Хадгаллаа")
+    if is_admin:
+        gif_url = st.text_input("🎞 Баярын GIF холбоос (сонголттой)",
+                                value=data.get("settings", {}).get("gif", ""),
+                                placeholder="https://...gif  (хоосон бол анхны GIF)")
+        if st.button("GIF хадгалах"):
+            put("settings", {"gif": gif_url.strip()}); st.success("Хадгаллаа")
 apply_theme(st.session_state.theme)
 
 if is_admin:
@@ -248,6 +255,14 @@ for n_i, p in enumerate(order):
         badge = " ✅ Шалгагдсан" if tasks and ok == len(tasks) else ""
         st.subheader(f"{'👉 ' if p == me_idx else ''}{names[p]}{badge}")
         st.progress(ok / len(tasks) if tasks else 0.0, text=f"{ok}/{len(tasks)}")
+        if tasks and ok == len(tasks):
+            gif = data.get("settings", {}).get("gif") or GIF_FILE
+            if gif.startswith("http") or os.path.exists(gif):
+                st.image(gif, use_container_width=True)
+            st.success(f"🎉 Баяр хүргэе, {names[p]}! 7 хоногийн бүх цэвэрлэгээгээ хийлээ!")
+            if p == me_idx and not st.session_state.get(f"bal_{w}_{p}"):
+                st.session_state[f"bal_{w}_{p}"] = True
+                st.balloons()
         for i, t in enumerate(tasks):
             key = did(w, p, i); rec = data.get(key)
             imgs = ([rec["img"]] if "img" in rec else rec.get("imgs", [])) if rec else []
