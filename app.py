@@ -1,10 +1,10 @@
-import base64, io, json, os, random
+import base64, glob, io, json, os, random, uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageSequence
 
 TZ = ZoneInfo("Asia/Ulaanbaatar")
 MAX_PHOTOS = 4  # нэг ажилд оруулах зургийн дээд тоо
@@ -13,7 +13,7 @@ DAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Бааса�
 TASKS = [
     "Bar1 хөргөгч", "Пос орчин", "Бүх алчуур", "Bar2 хөргөгч", "Pantry эмх цэгц", "Cake сав",
     "Pantry хөргөгч", "Pantry угаалтуурын шүүгээ", "Powder сав", "Pantry хөлдөөгч", "Pantry хар шүүгээ",
-    "Хогийн шүүр, тосгуур", "Gelato хөлдөөгч", "Gelato хар шүүгээ", "Бохь түүх", "Gelato зураг",
+    "Хогийн шүүр, тосгуур", "Gelato хөлдөөгч", "Gelato хар шүүгээ", "Бохь түүх", "Gelato зурагm",
     "Gelato пос орчин", "Gelato угаалтуур", "Menu board", "Bene logo", "Бүх сагс", "Gelato show case",
     "Шалны мод, хувин", "Gelato шилэн хана", "Cake show case", "Номын тавиур", "Төмөр хашлага",
     "Gelato take гэрэл", "Бүх сандал", "Чулуун тавцан", "Бүх ширээ", "Selfbar", "Бүх хогийн сав",
@@ -48,7 +48,7 @@ def _check(r):
         st.error(f"Supabase алдаа {r.status_code}: {r.text[:300]}")
         st.stop()
 
-GIF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "celebrate.gif")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL = "local_store.json"  # зөвхөн компьютер дээр турших үед (Cloud дээр хадгалагдахгүй)
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -119,6 +119,56 @@ def rollover(state, data):
             counts.setdefault(n, {})[t] = counts.get(n, {}).get(t, 0) + 1
     put("history", {"counts": counts})
     new_week(state["names"], {"week": state["weekStart"], "list": missed}, counts)
+
+def show_gif(src, data):
+    if src.startswith("gif:"):
+        rec = data.get(src)
+        if rec:
+            st.image(base64.b64decode(rec["data"]), use_container_width=True)
+    else:
+        st.image(src, use_container_width=True)
+
+def shrink_gif(file, limit=1_200_000):
+    """GIF-ийг жижигсгэнэ (360px, шаардлагатай бол кадр багасгана). Хэт том хэвээр бол None."""
+    im = Image.open(file)
+    frames, durs = [], []
+    for fr in ImageSequence.Iterator(im):
+        durs.append(fr.info.get("duration", 80) or 80)
+        f = fr.convert("RGB"); f.thumbnail((360, 360)); frames.append(f.copy())
+    def enc(fs, ds):
+        buf = io.BytesIO()
+        fs[0].save(buf, "GIF", save_all=True, append_images=fs[1:], duration=ds, loop=0, optimize=True)
+        return buf.getvalue()
+    out = enc(frames, durs)
+    while len(out) > limit and len(frames) > 6:
+        durs = [durs[i] + (durs[i + 1] if i + 1 < len(durs) else 0) for i in range(0, len(durs), 2)]
+        frames = frames[::2]
+        out = enc(frames, durs)
+    return out if len(out) <= limit else None
+
+def gif_pool(settings, data):
+    """Баярын GIF-ийн жагсаалт: repo доторх *.gif файлууд + админы нэмсэн холбоосууд."""
+    pool = []
+    files = sorted(glob.glob(os.path.join(APP_DIR, "*.gif")) + glob.glob(os.path.join(APP_DIR, "gifs", "*.gif")))
+    for f in files:
+        pool.append(("📁 " + os.path.basename(f), f))
+    for k in sorted((k for k in data if k.startswith("gif:")), key=lambda k: data[k].get("at", 0)):
+        pool.append(("🖼 " + data[k].get("name", "GIF"), k))  # админ вэб дээрээс оруулсан GIF-үүд
+    urls = settings.get("gifs") or ([settings["gif"]] if settings.get("gif") else [])
+    for u in urls:
+        pool.append(("🔗 " + u[-28:], u))
+    return pool
+
+def pick_gif(idx, name, week, settings, pool):
+    """Админ оноосон бол тэр. Үгүй бол бариста бүрт дарааллаар өөр GIF оногдож, 7 хоног бүр шилжинэ."""
+    srcs = [s for _, s in pool]
+    if not srcs:
+        return None
+    want = settings.get("person", {}).get(name)
+    if want in srcs:
+        return want
+    wk = datetime.fromisoformat(week).toordinal() // 7
+    return srcs[(idx + wk) % len(srcs)]
 
 def compress(file):
     im = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
@@ -205,11 +255,51 @@ with st.sidebar:
     if is_admin and st.button("🌐 Бүгдэд энэ өнгийг хадгалах"):
         put("theme", {"name": st.session_state.theme}); st.success("Хадгаллаа")
     if is_admin:
-        gif_url = st.text_input("🎞 Баярын GIF холбоос (сонголттой)",
-                                value=data.get("settings", {}).get("gif", ""),
-                                placeholder="https://...gif  (хоосон бол анхны GIF)")
-        if st.button("GIF хадгалах"):
-            put("settings", {"gif": gif_url.strip()}); st.success("Хадгаллаа")
+        with st.expander("🎞 Баярын GIF-үүд"):
+            stg = data.get("settings", {})
+            n_up = st.session_state.get("gif_up_n", 0)
+            ups = st.file_uploader("📤 GIF оруулах (хэд ч болно)", type=["gif"], accept_multiple_files=True,
+                                   key=f"gifup_{n_up}")
+            if ups:
+                have = sum(1 for k in data if k.startswith("gif:"))
+                for f in ups[: max(0, 12 - have)]:
+                    blob = shrink_gif(f)
+                    if blob is None:
+                        st.error(f"{f.name}: хэт том байна, жижигрүүлээд дахин оруулна уу")
+                        continue
+                    put(f"gif:{uuid.uuid4().hex[:12]}", {"name": f.name, "at": datetime.now(TZ).timestamp(),
+                                                         "data": base64.b64encode(blob).decode()})
+                    st.toast(f"{f.name} хадгалагдлаа")
+                st.session_state["gif_up_n"] = n_up + 1
+                st.rerun()
+            up_keys = sorted((k for k in data if k.startswith("gif:")), key=lambda k: data[k].get("at", 0))
+            st.caption(f"Оруулсан GIF: {len(up_keys)} (дээд тал нь 12)")
+            for k in up_keys:
+                c1, c2, c3 = st.columns([1, 2, 1])
+                c1.image(base64.b64decode(data[k]["data"]), use_container_width=True)
+                c2.caption(data[k].get("name", "GIF"))
+                if c3.button("🗑", key="gdel" + k):
+                    delete(k); st.rerun()
+            old_urls = stg.get("gifs") or ([stg["gif"]] if stg.get("gif") else [])
+            urls_txt = st.text_area("Нэмэлт GIF холбоосууд (мөр болгон нэг)", value="\n".join(old_urls),
+                                    placeholder="https://...gif")
+            urls = [u.strip() for u in urls_txt.splitlines() if u.strip()]
+            pool_now = gif_pool({"gifs": urls}, data)
+            labels = {src: lab for lab, src in pool_now}
+            person = dict(stg.get("person", {}))
+            if state:
+                st.caption("Хүн бүрт өөр GIF оноож болно (сонгохгүй бол 🎲 санамсаргүй)")
+                srcs = ["__random__"] + [src for _, src in pool_now]
+                for n in state["names"]:
+                    cur = person.get(n, "__random__")
+                    person[n] = st.selectbox(n, srcs, index=srcs.index(cur) if cur in srcs else 0,
+                                             format_func=lambda x: "🎲 Санамсаргүй" if x == "__random__" else labels[x],
+                                             key="gp_" + n)
+            if st.button("🎲 Оноолтыг цэвэрлэх (бүгд санамсаргүй)"):
+                put("settings", {"gifs": urls, "person": {}}); st.rerun()
+            if st.button("GIF хадгалах"):
+                put("settings", {"gifs": urls, "person": {k: v for k, v in person.items() if v != "__random__"}})
+                st.success("Хадгаллаа")
 apply_theme(st.session_state.theme)
 
 if is_admin:
@@ -256,9 +346,10 @@ for n_i, p in enumerate(order):
         st.subheader(f"{'👉 ' if p == me_idx else ''}{names[p]}{badge}")
         st.progress(ok / len(tasks) if tasks else 0.0, text=f"{ok}/{len(tasks)}")
         if tasks and ok == len(tasks):
-            gif = data.get("settings", {}).get("gif") or GIF_FILE
-            if gif.startswith("http") or os.path.exists(gif):
-                st.image(gif, use_container_width=True)
+            stg = data.get("settings", {})
+            gif = pick_gif(p, names[p], w, stg, gif_pool(stg, data))
+            if gif:
+                show_gif(gif, data)
             st.success(f"🎉 Баяр хүргэе, {names[p]}! 7 хоногийн бүх цэвэрлэгээгээ хийлээ!")
             if p == me_idx and not st.session_state.get(f"bal_{w}_{p}"):
                 st.session_state[f"bal_{w}_{p}"] = True
